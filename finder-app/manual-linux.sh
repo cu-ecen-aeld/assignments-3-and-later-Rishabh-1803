@@ -6,12 +6,21 @@ set -e
 set -u
 
 OUTDIR=/tmp/aeld
-KERNEL_REPO=https://github.com/torvalds/linux.git
+
+KERNEL_REPO=https://github.com/gregkh/linux.git
 KERNEL_VERSION=v5.15.163
 BUSYBOX_VERSION=1_33_1
+
 FINDER_APP_DIR=$(realpath $(dirname $0))
+
 ARCH=arm64
-CROSS_COMPILE=aarch64-linux-gnu-
+
+if command -v aarch64-none-linux-gnu-gcc >/dev/null 2>&1
+then
+    CROSS_COMPILE=aarch64-none-linux-gnu-
+else
+    CROSS_COMPILE=aarch64-linux-gnu-
+fi
 
 if [ $# -lt 1 ]
 then
@@ -33,10 +42,11 @@ if [ ! -d "${OUTDIR}/linux-stable" ]
 then
     echo "Cloning Linux kernel ${KERNEL_VERSION}"
 
-    git clone ${KERNEL_REPO} \
+    git clone \
         --depth 1 \
         --single-branch \
         --branch ${KERNEL_VERSION} \
+        ${KERNEL_REPO} \
         linux-stable
 fi
 
@@ -51,10 +61,11 @@ then
         CROSS_COMPILE=${CROSS_COMPILE}
 fi
 
-cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}/Image
+cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image \
+   ${OUTDIR}/Image
 
 #################################################
-# Create Root Filesystem
+# Root filesystem
 #################################################
 
 echo "Creating root filesystem"
@@ -82,7 +93,7 @@ usr/sbin \
 var/log
 
 #################################################
-# Build Busybox
+# Busybox
 #################################################
 
 cd ${OUTDIR}
@@ -117,16 +128,23 @@ make CONFIG_PREFIX=${OUTDIR}/rootfs \
 
 mkdir -p ${OUTDIR}/rootfs/lib
 
-cp -L /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 \
+if [ -d /usr/aarch64-linux-gnu/lib ]
+then
+    LIBPATH=/usr/aarch64-linux-gnu/lib
+else
+    LIBPATH=$(dirname $(find /usr -name ld-linux-aarch64.so.1 | head -1))
+fi
+
+cp -L ${LIBPATH}/ld-linux-aarch64.so.1 \
       ${OUTDIR}/rootfs/lib/
 
-cp -L /usr/aarch64-linux-gnu/lib/libc.so.* \
+cp -L ${LIBPATH}/libm.so.* \
       ${OUTDIR}/rootfs/lib/
 
-cp -L /usr/aarch64-linux-gnu/lib/libm.so.* \
+cp -L ${LIBPATH}/libresolv.so.* \
       ${OUTDIR}/rootfs/lib/
 
-cp -L /usr/aarch64-linux-gnu/lib/libresolv.so.* \
+cp -L ${LIBPATH}/libc.so.* \
       ${OUTDIR}/rootfs/lib/
 
 #################################################
@@ -137,12 +155,13 @@ sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3 || true
 sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1 || true
 
 #################################################
-# Build Writer Application
+# Build Writer
 #################################################
 
 cd ${FINDER_APP_DIR}
 
 make clean
+
 make CROSS_COMPILE=${CROSS_COMPILE}
 
 #################################################
@@ -152,22 +171,22 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 mkdir -p ${OUTDIR}/rootfs/home/conf
 
 cp ${FINDER_APP_DIR}/finder.sh \
-   ${OUTDIR}/rootfs/home/
+    ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/finder-test.sh \
-   ${OUTDIR}/rootfs/home/
+    ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/writer \
-   ${OUTDIR}/rootfs/home/
+    ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/autorun-qemu.sh \
-   ${OUTDIR}/rootfs/home/
+    ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/conf/assignment.txt \
-   ${OUTDIR}/rootfs/home/conf/
+    ${OUTDIR}/rootfs/home/conf/
 
 cp ${FINDER_APP_DIR}/conf/username.txt \
-   ${OUTDIR}/rootfs/home/conf/
+    ${OUTDIR}/rootfs/home/conf/
 
 chmod +x ${OUTDIR}/rootfs/home/finder.sh
 chmod +x ${OUTDIR}/rootfs/home/finder-test.sh
@@ -181,7 +200,7 @@ chmod +x ${OUTDIR}/rootfs/home/autorun-qemu.sh
 ln -sf sbin/init ${OUTDIR}/rootfs/init
 
 #################################################
-# Set ownership
+# Ownership
 #################################################
 
 sudo chown -R root:root ${OUTDIR}/rootfs
@@ -201,5 +220,9 @@ gzip -f initramfs.cpio
 
 echo ""
 echo "Build complete"
-echo "Kernel Image: ${OUTDIR}/Image"
-echo "Initramfs: ${OUTDIR}/initramfs.cpio.gz"
+echo "Kernel Image:"
+echo "${OUTDIR}/Image"
+
+echo ""
+echo "Initramfs:"
+echo "${OUTDIR}/initramfs.cpio.gz"
