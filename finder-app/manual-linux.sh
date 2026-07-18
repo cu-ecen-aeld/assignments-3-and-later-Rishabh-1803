@@ -128,24 +128,15 @@ make CONFIG_PREFIX=${OUTDIR}/rootfs \
 
 mkdir -p ${OUTDIR}/rootfs/lib
 
-if [ -d /usr/aarch64-linux-gnu/lib ]
-then
-    LIBPATH=/usr/aarch64-linux-gnu/lib
-else
-    LIBPATH=$(dirname $(find /usr -name ld-linux-aarch64.so.1 | head -1))
-fi
+LIBC_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libc.so.6)
+LIBM_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libm.so.6)
+LIBRESOLV_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libresolv.so.2)
+LDSO_PATH=$(${CROSS_COMPILE}gcc -print-file-name=ld-linux-aarch64.so.1)
 
-cp -L ${LIBPATH}/ld-linux-aarch64.so.1 \
-      ${OUTDIR}/rootfs/lib/
-
-cp -L ${LIBPATH}/libm.so.* \
-      ${OUTDIR}/rootfs/lib/
-
-cp -L ${LIBPATH}/libresolv.so.* \
-      ${OUTDIR}/rootfs/lib/
-
-cp -L ${LIBPATH}/libc.so.* \
-      ${OUTDIR}/rootfs/lib/
+cp -L ${LIBC_PATH} ${OUTDIR}/rootfs/lib/
+cp -L ${LIBM_PATH} ${OUTDIR}/rootfs/lib/
+cp -L ${LIBRESOLV_PATH} ${OUTDIR}/rootfs/lib/
+cp -L ${LDSO_PATH} ${OUTDIR}/rootfs/lib/
 
 #################################################
 # Device Nodes
