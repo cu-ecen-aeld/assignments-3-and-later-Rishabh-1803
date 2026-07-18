@@ -1,18 +1,12 @@
 #!/bin/bash
-# Script outline to install and build kernel.
-# Author: Siddhant Jajoo
 
 set -e
 set -u
 
 OUTDIR=/tmp/aeld
-
 KERNEL_REPO=https://github.com/gregkh/linux.git
 KERNEL_VERSION=v5.15.163
 BUSYBOX_VERSION=1_33_1
-
-FINDER_APP_DIR=$(realpath $(dirname $0))
-
 ARCH=arm64
 
 if command -v aarch64-none-linux-gnu-gcc >/dev/null 2>&1
@@ -22,23 +16,25 @@ else
     CROSS_COMPILE=aarch64-linux-gnu-
 fi
 
-if [ $# -lt 1 ]
+FINDER_APP_DIR=$(realpath $(dirname $0))
+
+if [ $# -ge 1 ]
 then
-    echo "Using default directory ${OUTDIR} for output"
-else
     OUTDIR=$1
-    echo "Using passed directory ${OUTDIR} for output"
 fi
 
-mkdir -p ${OUTDIR}
+echo "Using output directory ${OUTDIR}"
 
-#################################################
+mkdir -p ${OUTDIR}
+OUTDIR=$(realpath ${OUTDIR})
+
+############################################################
 # Build Linux Kernel
-#################################################
+############################################################
 
 cd ${OUTDIR}
 
-if [ ! -d "${OUTDIR}/linux-stable" ]
+if [ ! -d linux-stable ]
 then
     echo "Cloning Linux kernel ${KERNEL_VERSION}"
 
@@ -50,31 +46,39 @@ then
         linux-stable
 fi
 
-if [ ! -f "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" ]
-then
-    cd linux-stable
+cd linux-stable
 
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
+if [ ! -f arch/${ARCH}/boot/Image ]
+then
+    echo "Building kernel"
+
+    make ARCH=${ARCH} \
+        CROSS_COMPILE=${CROSS_COMPILE} \
+        mrproper
+
+    make ARCH=${ARCH} \
+        CROSS_COMPILE=${CROSS_COMPILE} \
+        defconfig
 
     make -j$(nproc) \
         ARCH=${ARCH} \
-        CROSS_COMPILE=${CROSS_COMPILE}
+        CROSS_COMPILE=${CROSS_COMPILE} \
+        all
 fi
 
-cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image \
-   ${OUTDIR}/Image
+cp arch/${ARCH}/boot/Image ${OUTDIR}
 
-#################################################
-# Root filesystem
-#################################################
+############################################################
+# Rootfs
+############################################################
 
-echo "Creating root filesystem"
+cd ${OUTDIR}
 
-sudo rm -rf ${OUTDIR}/rootfs
+sudo rm -rf rootfs
 
-mkdir -p ${OUTDIR}/rootfs
+mkdir -p rootfs
 
-cd ${OUTDIR}/rootfs
+cd rootfs
 
 mkdir -p \
 bin \
@@ -82,23 +86,24 @@ dev \
 etc \
 home \
 lib \
-lib64 \
 proc \
 sbin \
 sys \
 tmp \
+usr \
+var \
 usr/bin \
 usr/lib \
 usr/sbin \
 var/log
 
-#################################################
-# Busybox
-#################################################
+############################################################
+# BusyBox
+############################################################
 
 cd ${OUTDIR}
 
-if [ ! -d "${OUTDIR}/busybox" ]
+if [ ! -d busybox ]
 then
     git clone https://git.busybox.net/busybox
 fi
@@ -107,47 +112,76 @@ cd busybox
 
 git checkout ${BUSYBOX_VERSION}
 
-make distclean || true
+make distclean
 
-make ARCH=${ARCH} \
-     CROSS_COMPILE=${CROSS_COMPILE} \
-     defconfig
+make \
+    ARCH=${ARCH} \
+    CROSS_COMPILE=${CROSS_COMPILE} \
+    defconfig
 
 make -j$(nproc) \
-     ARCH=${ARCH} \
-     CROSS_COMPILE=${CROSS_COMPILE}
+    ARCH=${ARCH} \
+    CROSS_COMPILE=${CROSS_COMPILE}
 
-make CONFIG_PREFIX=${OUTDIR}/rootfs \
-     ARCH=${ARCH} \
-     CROSS_COMPILE=${CROSS_COMPILE} \
-     install
+make \
+    ARCH=${ARCH} \
+    CROSS_COMPILE=${CROSS_COMPILE} \
+    CONFIG_PREFIX=${OUTDIR}/rootfs \
+    install
 
-#################################################
+############################################################
 # Shared Libraries
-#################################################
+############################################################
+
+echo "Copying shared libraries"
 
 mkdir -p ${OUTDIR}/rootfs/lib
 
-LIBC_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libc.so.6)
-LIBM_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libm.so.6)
-LIBRESOLV_PATH=$(${CROSS_COMPILE}gcc -print-file-name=libresolv.so.2)
-LDSO_PATH=$(${CROSS_COMPILE}gcc -print-file-name=ld-linux-aarch64.so.1)
+LIBS="\
+ld-linux-aarch64.so.1 \
+libc.so.6 \
+libm.so.6 \
+libresolv.so.2"
 
-cp -L ${LIBC_PATH} ${OUTDIR}/rootfs/lib/
-cp -L ${LIBM_PATH} ${OUTDIR}/rootfs/lib/
-cp -L ${LIBRESOLV_PATH} ${OUTDIR}/rootfs/lib/
-cp -L ${LDSO_PATH} ${OUTDIR}/rootfs/lib/
+for lib in ${LIBS}
+do
+    LIBPATH=$(${CROSS_COMPILE}gcc \
+        -print-file-name=${lib})
 
-#################################################
+    echo "${lib} -> ${LIBPATH}"
+
+    if [ ! -f "${LIBPATH}" ]
+    then
+        echo "ERROR locating ${lib}"
+        exit 1
+    fi
+
+    cp -L \
+        "${LIBPATH}" \
+        ${OUTDIR}/rootfs/lib/
+done
+
+rm -rf ${OUTDIR}/rootfs/lib64
+ln -sf lib ${OUTDIR}/rootfs/lib64
+
+echo "Libraries copied:"
+ls -l ${OUTDIR}/rootfs/lib
+
+############################################################
 # Device Nodes
-#################################################
+############################################################
 
-sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3 || true
-sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1 || true
+sudo mknod -m 666 \
+    ${OUTDIR}/rootfs/dev/null \
+    c 1 3 || true
 
-#################################################
+sudo mknod -m 600 \
+    ${OUTDIR}/rootfs/dev/console \
+    c 5 1 || true
+
+############################################################
 # Build Writer
-#################################################
+############################################################
 
 cd ${FINDER_APP_DIR}
 
@@ -155,65 +189,53 @@ make clean
 
 make CROSS_COMPILE=${CROSS_COMPILE}
 
-#################################################
+############################################################
 # Copy Assignment Files
-#################################################
+############################################################
 
-mkdir -p ${OUTDIR}/rootfs/home/conf
+cp writer ${OUTDIR}/rootfs/home/
+cp finder.sh ${OUTDIR}/rootfs/home/
+cp finder-test.sh ${OUTDIR}/rootfs/home/
+cp autorun-qemu.sh ${OUTDIR}/rootfs/home/
 
-cp ${FINDER_APP_DIR}/finder.sh \
+cp -aL conf \
     ${OUTDIR}/rootfs/home/
 
-cp ${FINDER_APP_DIR}/finder-test.sh \
-    ${OUTDIR}/rootfs/home/
+sed -i \
+'s#../conf/assignment.txt#conf/assignment.txt#g' \
+${OUTDIR}/rootfs/home/finder-test.sh
 
-cp ${FINDER_APP_DIR}/writer \
-    ${OUTDIR}/rootfs/home/
+############################################################
+# Init
+############################################################
 
-cp ${FINDER_APP_DIR}/autorun-qemu.sh \
-    ${OUTDIR}/rootfs/home/
+ln -sf sbin/init \
+    ${OUTDIR}/rootfs/init
 
-cp ${FINDER_APP_DIR}/conf/assignment.txt \
-    ${OUTDIR}/rootfs/home/conf/
-
-cp ${FINDER_APP_DIR}/conf/username.txt \
-    ${OUTDIR}/rootfs/home/conf/
-
-chmod +x ${OUTDIR}/rootfs/home/finder.sh
-chmod +x ${OUTDIR}/rootfs/home/finder-test.sh
-chmod +x ${OUTDIR}/rootfs/home/writer
-chmod +x ${OUTDIR}/rootfs/home/autorun-qemu.sh
-
-#################################################
-# Create init symlink
-#################################################
-
-ln -sf sbin/init ${OUTDIR}/rootfs/init
-
-#################################################
+############################################################
 # Ownership
-#################################################
+############################################################
 
-sudo chown -R root:root ${OUTDIR}/rootfs
+sudo chown -R root:root \
+    ${OUTDIR}/rootfs
 
-#################################################
-# Create initramfs
-#################################################
+############################################################
+# Initramfs
+############################################################
 
 cd ${OUTDIR}/rootfs
 
-find . | cpio -H newc -ov --owner root:root \
-    > ${OUTDIR}/initramfs.cpio
+find . | \
+cpio -H newc -ov \
+--owner root:root \
+> ${OUTDIR}/initramfs.cpio
 
-cd ${OUTDIR}
+gzip -f ${OUTDIR}/initramfs.cpio
 
-gzip -f initramfs.cpio
+echo "Kernel image:"
+ls -l ${OUTDIR}/Image
 
-echo ""
-echo "Build complete"
-echo "Kernel Image:"
-echo "${OUTDIR}/Image"
-
-echo ""
 echo "Initramfs:"
-echo "${OUTDIR}/initramfs.cpio.gz"
+ls -l ${OUTDIR}/initramfs.cpio.gz
+
+echo "manual-linux.sh completed successfully"
