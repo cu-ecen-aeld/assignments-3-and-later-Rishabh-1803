@@ -1,12 +1,12 @@
 #!/bin/bash
 # Script outline to install and build kernel.
-# Author: Siddhant Jajoo.
+# Author: Siddhant Jajoo
 
 set -e
 set -u
 
 OUTDIR=/tmp/aeld
-KERNEL_REPO=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+KERNEL_REPO=https://github.com/torvalds/linux.git
 KERNEL_VERSION=v5.15.163
 BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
@@ -32,10 +32,12 @@ cd ${OUTDIR}
 if [ ! -d "${OUTDIR}/linux-stable" ]
 then
     echo "Cloning Linux kernel ${KERNEL_VERSION}"
+
     git clone ${KERNEL_REPO} \
         --depth 1 \
         --single-branch \
-        --branch ${KERNEL_VERSION}
+        --branch ${KERNEL_VERSION} \
+        linux-stable
 fi
 
 if [ ! -f "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" ]
@@ -49,10 +51,10 @@ then
         CROSS_COMPILE=${CROSS_COMPILE}
 fi
 
-cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}/
+cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}/Image
 
 #################################################
-# RootFS Creation
+# Create Root Filesystem
 #################################################
 
 echo "Creating root filesystem"
@@ -80,7 +82,7 @@ usr/sbin \
 var/log
 
 #################################################
-# Busybox
+# Build Busybox
 #################################################
 
 cd ${OUTDIR}
@@ -92,7 +94,7 @@ fi
 
 cd busybox
 
-git checkout 1_33_1
+git checkout ${BUSYBOX_VERSION}
 
 make distclean || true
 
@@ -114,7 +116,6 @@ make CONFIG_PREFIX=${OUTDIR}/rootfs \
 #################################################
 
 mkdir -p ${OUTDIR}/rootfs/lib
-mkdir -p ${OUTDIR}/rootfs/lib64
 
 cp -L /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 \
       ${OUTDIR}/rootfs/lib/
@@ -136,7 +137,7 @@ sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3 || true
 sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1 || true
 
 #################################################
-# Build Writer
+# Build Writer Application
 #################################################
 
 cd ${FINDER_APP_DIR}
@@ -151,22 +152,22 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 mkdir -p ${OUTDIR}/rootfs/home/conf
 
 cp ${FINDER_APP_DIR}/finder.sh \
-    ${OUTDIR}/rootfs/home/
+   ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/finder-test.sh \
-    ${OUTDIR}/rootfs/home/
+   ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/writer \
-    ${OUTDIR}/rootfs/home/
+   ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/autorun-qemu.sh \
-    ${OUTDIR}/rootfs/home/
+   ${OUTDIR}/rootfs/home/
 
 cp ${FINDER_APP_DIR}/conf/assignment.txt \
-    ${OUTDIR}/rootfs/home/conf/
+   ${OUTDIR}/rootfs/home/conf/
 
 cp ${FINDER_APP_DIR}/conf/username.txt \
-    ${OUTDIR}/rootfs/home/conf/
+   ${OUTDIR}/rootfs/home/conf/
 
 chmod +x ${OUTDIR}/rootfs/home/finder.sh
 chmod +x ${OUTDIR}/rootfs/home/finder-test.sh
@@ -174,7 +175,13 @@ chmod +x ${OUTDIR}/rootfs/home/writer
 chmod +x ${OUTDIR}/rootfs/home/autorun-qemu.sh
 
 #################################################
-# Ownership
+# Create init symlink
+#################################################
+
+ln -sf sbin/init ${OUTDIR}/rootfs/init
+
+#################################################
+# Set ownership
 #################################################
 
 sudo chown -R root:root ${OUTDIR}/rootfs
@@ -194,8 +201,5 @@ gzip -f initramfs.cpio
 
 echo ""
 echo "Build complete"
-echo "Kernel Image:"
-echo "${OUTDIR}/Image"
-echo ""
-echo "Initramfs:"
-echo "${OUTDIR}/initramfs.cpio.gz"
+echo "Kernel Image: ${OUTDIR}/Image"
+echo "Initramfs: ${OUTDIR}/initramfs.cpio.gz"
