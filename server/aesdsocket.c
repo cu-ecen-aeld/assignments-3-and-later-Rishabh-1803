@@ -211,7 +211,7 @@ static void * process_conn(void* arg) {
                 exit(EXIT_FAILURE);
             }
         }
-    } while (nread > 0 && buf[strlen(buf)-1] != '\n');
+    } while ((nread > 0) && (buf[nread - 1] != '\n'));
     
     r = pthread_mutex_lock(&ctx.mtx_store);
     if (r) {
@@ -378,8 +378,6 @@ int init_timer() {
         return errno;
     }
 
-    write_timestamp();
-
     return 0;
 }
 
@@ -413,7 +411,9 @@ int main(int argc, char** argv) {
     ctx.conns = NULL;
 
     pthread_mutex_init(&ctx.mtx_store, NULL);
-    ctx.store_fd = open(STORE_PATH, O_RDWR | O_CREAT, 0600);
+    ctx.store_fd = open(STORE_PATH,
+                    O_RDWR | O_CREAT | O_TRUNC,
+                    0600);
     if (ctx.store_fd == -1) {
         syslog(LOG_ERR, "Failed to open file %s", STORE_PATH);
         exit(EXIT_FAILURE);
@@ -431,8 +431,9 @@ int main(int argc, char** argv) {
         exit(EXIT_FAILURE);
     }
 
-    for (;;) {
-        listen_socket();
-        conns_clean(false);
+    while (true) {
+    listen_socket();
+    conns_clean(false);
     }
+    
 }
