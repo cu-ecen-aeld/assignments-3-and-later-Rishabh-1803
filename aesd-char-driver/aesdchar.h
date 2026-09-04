@@ -1,35 +1,44 @@
 /*
  * aesdchar.h
  *
- *  Created on: Oct 23, 2019
- *      Author: Dan Walkes
+ * AESD character driver definitions.
  */
 
 #ifndef AESD_CHAR_DRIVER_AESDCHAR_H_
 #define AESD_CHAR_DRIVER_AESDCHAR_H_
 
-#define AESD_DEBUG 1  //Remove comment on this line to enable debug
+#define AESD_DEBUG 1
 
-#undef PDEBUG             /* undef it, just in case */
+#undef PDEBUG
 #ifdef AESD_DEBUG
 #  ifdef __KERNEL__
-     /* This one if debugging is on, and kernel space */
-#    define PDEBUG(fmt, args...) printk( KERN_DEBUG "aesdchar: " fmt, ## args)
+#    define PDEBUG(fmt, args...) printk(KERN_DEBUG "aesdchar: " fmt, ##args)
 #  else
-     /* This one for user space */
-#    define PDEBUG(fmt, args...) fprintf(stderr, fmt, ## args)
+#    define PDEBUG(fmt, args...) fprintf(stderr, fmt, ##args)
 #  endif
 #else
-#  define PDEBUG(fmt, args...) /* not debugging: nothing */
+#  define PDEBUG(fmt, args...)
 #endif
+
+#ifdef __KERNEL__
+#include <linux/cdev.h>
+#include <linux/mutex.h>
+#include <linux/types.h>
+
+#include "aesd-circular-buffer.h"
 
 struct aesd_dev
 {
-    /**
-     * TODO: Add structure(s) and locks needed to complete assignment requirements
-     */
-    struct cdev cdev;     /* Char device structure      */
-};
+    struct cdev cdev;
+    struct aesd_circular_buffer buffer;
+    struct mutex lock;
 
+    /*
+     * Data from write() calls which has not yet reached '\n'.
+     */
+    char *write_buffer;
+    size_t write_buffer_size;
+};
+#endif
 
 #endif /* AESD_CHAR_DRIVER_AESDCHAR_H_ */
