@@ -16,6 +16,7 @@
 #include <linux/kernel.h>
 
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 
 int aesd_major = 0;
 int aesd_minor = 0;
@@ -303,6 +304,69 @@ static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
     return newpos;
 }
 
+static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_seekto seekto;
+    struct aesd_buffer_entry *entry;
+    uint8_t entry_index;
+    uint8_t entry_count;
+    size_t file_pos = 0;
+    uint8_t index;
+
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC)
+        return -ENOTTY;
+
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR)
+        return -ENOTTY;
+
+    if (cmd != AESDCHAR_IOCSEEKTO)
+        return -ENOTTY;
+
+    if (copy_from_user(&seekto,
+                       (struct aesd_seekto __user *)arg,
+                       sizeof(seekto)))
+        return -EFAULT;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    if (dev->buffer.full)
+        entry_count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    else
+        entry_count = dev->buffer.in_offs;
+
+    if (seekto.write_cmd >= entry_count) {
+        mutex_unlock(&dev->lock);
+        return -EINVAL;
+    }
+
+    entry_index = (dev->buffer.out_offs + seekto.write_cmd) %
+                  AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+    entry = &dev->buffer.entry[entry_index];
+
+    if (seekto.write_cmd_offset >= entry->size) {
+        mutex_unlock(&dev->lock);
+        return -EINVAL;
+    }
+
+    for (index = 0; index < seekto.write_cmd; index++) {
+        uint8_t current_index =
+            (dev->buffer.out_offs + index) %
+            AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+        file_pos += dev->buffer.entry[current_index].size;
+    }
+
+    file_pos += seekto.write_cmd_offset;
+    filp->f_pos = file_pos;
+
+    mutex_unlock(&dev->lock);
+
+    return 0;
+}
+
 struct file_operations aesd_fops = {
     .owner = THIS_MODULE,
     .read = aesd_read,
@@ -310,6 +374,7 @@ struct file_operations aesd_fops = {
     .open = aesd_open,
     .release = aesd_release,
     .llseek = aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)

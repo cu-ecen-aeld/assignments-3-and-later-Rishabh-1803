@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
@@ -305,9 +308,184 @@ static int send_store_contents(int conn_fd)
     return 0;
 }
 
+#if USE_AESD_CHAR_DEVICE
+
+static int parse_u32_decimal(const char *start,
+                             const char *end,
+                             uint32_t *value)
+{
+    unsigned long long result = 0;
+    const char *p;
+
+    if (start >= end)
+        return -1;
+
+    for (p = start; p < end; p++) {
+        if (*p < '0' || *p > '9')
+            return -1;
+
+        result = result * 10 + (unsigned long long)(*p - '0');
+
+        if (result > UINT32_MAX)
+            return -1;
+    }
+
+    *value = (uint32_t)result;
+    return 0;
+}
+
+/*
+ * Return values:
+ *   0  -> normal socket command
+ *   1  -> valid AESDCHAR_IOCSEEKTO command
+ *  -1  -> malformed AESDCHAR_IOCSEEKTO command
+ */
+static int parse_ioctl_command(const char *request,
+                               size_t request_len,
+                               struct aesd_seekto *seekto)
+{
+    static const char prefix[] = "AESDCHAR_IOCSEEKTO:";
+    const size_t prefix_len = sizeof(prefix) - 1;
+    const char *comma;
+    size_t command_end;
+
+    if (request_len < prefix_len ||
+        memcmp(request, prefix, prefix_len) != 0)
+        return 0;
+
+    command_end = request_len;
+
+    while (command_end > prefix_len &&
+           request[command_end - 1] == '\n')
+        command_end--;
+
+    if (command_end <= prefix_len)
+        return -1;
+
+    comma = memchr(request + prefix_len,
+                   ',',
+                   command_end - prefix_len);
+
+    if (!comma)
+        return -1;
+
+    if (memchr(comma + 1,
+               ',',
+               (size_t)((request + command_end) - (comma + 1))))
+        return -1;
+
+    if (parse_u32_decimal(request + prefix_len,
+                          comma,
+                          &seekto->write_cmd) != 0)
+        return -1;
+
+    if (parse_u32_decimal(comma + 1,
+                          request + command_end,
+                          &seekto->write_cmd_offset) != 0)
+        return -1;
+
+    return 1;
+}
+
+/*
+ * Read from the current file position and send all data to the socket.
+ * This is intentionally different from send_store_contents(), because
+ * ioctl() has already positioned this exact file descriptor.
+ */
+static int send_store_contents_from_fd(int store_fd, int conn_fd)
+{
+    char buf[BUF_SIZE];
+    ssize_t nread;
+
+    do {
+        nread = read(store_fd, buf, sizeof(buf));
+
+        if (nread == -1) {
+            syslog(LOG_ERR,
+                   "read() failed: %s(%d)",
+                   strerror(errno),
+                   errno);
+            return -1;
+        }
+
+        if (nread > 0) {
+            ssize_t total_sent = 0;
+
+            while (total_sent < nread) {
+                ssize_t nwrite = send(conn_fd,
+                                      buf + total_sent,
+                                      (size_t)(nread - total_sent),
+                                      0);
+
+                if (nwrite == -1) {
+                    syslog(LOG_ERR,
+                           "send() failed: %s(%d)",
+                           strerror(errno),
+                           errno);
+                    return -1;
+                }
+
+                total_sent += nwrite;
+            }
+        }
+    } while (nread > 0);
+
+    return 0;
+}
+
+static int handle_ioctl_request(const char *request,
+                                size_t request_len,
+                                int conn_fd)
+{
+    struct aesd_seekto seekto;
+    int parse_result;
+    int fd;
+
+    parse_result = parse_ioctl_command(request,
+                                       request_len,
+                                       &seekto);
+
+    if (parse_result == 0)
+        return 0;
+
+    if (parse_result < 0) {
+        syslog(LOG_ERR, "Malformed AESDCHAR_IOCSEEKTO command");
+        return -1;
+    }
+
+    fd = open_store();
+
+    if (fd == -1)
+        return -1;
+
+    /*
+     * The ioctl and all subsequent reads use the SAME open FD.
+     */
+    if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) == -1) {
+        syslog(LOG_ERR,
+               "ioctl(AESDCHAR_IOCSEEKTO) failed: %s(%d)",
+               strerror(errno),
+               errno);
+        close(fd);
+        return -1;
+    }
+
+    if (send_store_contents_from_fd(fd, conn_fd) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    return 1;
+}
+
+#endif /* USE_AESD_CHAR_DEVICE */
+
 static void *process_conn(void *arg)
 {
     char buf[BUF_SIZE];
+    char *request = NULL;
+    size_t request_len = 0;
     ssize_t nread;
     conn_ctx_t *conn_ctx;
 
@@ -328,18 +506,59 @@ static void *process_conn(void *arg)
         }
 
         if (nread > 0) {
-            if (write_request_to_store(buf, (size_t)nread) != 0)
-                break;
-        }
-    } while ((nread > 0) && (buf[nread - 1] != '\n'));
+            char *new_request;
 
-    /*
-     * The driver provides the serialization and state protection.
-     * Open it only for this actual access and close it immediately
-     * when the response has been read.
-     */
-    if (nread >= 0)
-        send_store_contents(conn_ctx->conn_fd);
+            new_request = realloc(request,
+                                  request_len + (size_t)nread + 1);
+
+            if (!new_request) {
+                syslog(LOG_ERR,
+                       "realloc() fail: %s(%d)",
+                       strerror(errno),
+                       errno);
+                break;
+            }
+
+            request = new_request;
+
+            memcpy(request + request_len,
+                   buf,
+                   (size_t)nread);
+
+            request_len += (size_t)nread;
+            request[request_len] = '\0';
+        }
+
+    } while ((nread > 0) &&
+             (memchr(buf, '\n', (size_t)nread) == NULL));
+
+    if (nread >= 0 && request_len > 0) {
+        int ioctl_result = 0;
+
+#if USE_AESD_CHAR_DEVICE
+        ioctl_result = handle_ioctl_request(request,
+                                            request_len,
+                                            conn_ctx->conn_fd);
+#endif
+
+        if (ioctl_result == 0) {
+            if (write_request_to_store(request, request_len) != 0)
+                goto cleanup;
+        } else if (ioctl_result < 0) {
+            goto cleanup;
+        }
+
+        /*
+         * A valid AESDCHAR_IOCSEEKTO request has already sent its
+         * response using the same FD, so do not perform the normal
+         * response path a second time.
+         */
+        if (ioctl_result == 0)
+            send_store_contents(conn_ctx->conn_fd);
+    }
+
+cleanup:
+    free(request);
 
     close(conn_ctx->conn_fd);
 
